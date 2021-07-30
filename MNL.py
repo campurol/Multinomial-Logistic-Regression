@@ -12,40 +12,12 @@ import pickle
 import numpy as np
 import pandas as pd
 
-'''
-
-###################################################################################
-
-The MIT License (MIT)
-
-Copyright (c) 2018 Lisong Guo <lisong.guo@me.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-###################################################################################
-'''
-
 class MNL(nn.Module):
     '''
         The Multinomial Logistic Regression model implemented with Pytorch
     '''
     def __init__(self, feature_list):
-        super(MNL, self).__init__()
+        super().__init__()   #MNL, self
         
         self.feature_list = feature_list
         input_dim = len(feature_list)
@@ -136,11 +108,11 @@ class MNL(nn.Module):
 
         else:
             output = data_loss
-
+        
         # Underflow in the loss calculation
-        if math.isnan(output.data[0]):
+        if math.isnan(output.data.item()):
             raise ValueError('NaN detected')
-            #return output.data[0]
+            #return output.item()
 
         if (isinstance(optimizer, torch.optim.LBFGS)):
             def closure():
@@ -158,7 +130,7 @@ class MNL(nn.Module):
             optimizer.step()
 
         # return the cost
-        return output.data[0]
+        return output.data.item()
 
 
     def predict(self, x_val, binary=False):
