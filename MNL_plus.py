@@ -11,6 +11,7 @@ import math
 
 from MNL import *
 
+import itertools
 
 '''
 This module provides a number of auxiliary functions, in addition to the MNL model.
@@ -77,19 +78,23 @@ def init_model(train_config):
 
     if (optimizer_method == 'SGD'):
         # e.g. lr = 0.01/ 1e-2
-        optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
+        optimizer = optim.SGD(model.parameters(
+        ), lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
 
     elif (optimizer_method == 'Adam'):
         # weight_decay:  add L2 regularization to the weights ?
         # It seems that with MNL any regularization would deteriarate the performance.
         # The Adam optimizer seems to converge faster than SGD
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     elif (optimizer_method == 'Adagrad'):
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     elif (optimizer_method == 'RMSprop'):
-        optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
+        optimizer = torch.optim.RMSprop(model.parameters(
+        ), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
 
     elif (optimizer_method == 'LBFGS'):
         # http://cs231n.github.io/neural-networks-3/#sgd
@@ -119,7 +124,8 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
         alter_features = train_config['alter_features']
         session_features = train_config['session_features']
         alternatives = train_config['alternatives']
-        choice_groups = train_config.get('choice_groups', [])   ##city_ope and NAICS
+        choice_groups = train_config.get(
+            'choice_groups', [])  # city_ope and NAICS
 
     total_cost = 0
     if (verbose >= 2):
@@ -127,22 +133,31 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
 
     for session_id in list(df_session_groups.groups.keys()):
 
-        #Add expand option
-        #This option creates all combinations of session_id, alter_id and then the choice
-        #Then it installs the session and alter_features
-        #from alter_data and session_data
+        #start of add expand option
         if (expand):
-            all_alternatives = alternatives[session_id[choice_groups]]
-            comb_index = pd.MultiIndex.from_tuples(itertools.product([session_id], all_alternatives), names=['session_id','alter_id'])
-            df_session = aux.set_index(['session_id','alter_id']).reindex(comb_index).reset_index()
-            df_session.loc[df_session.choice.isna()==False,'choice']=1
-            df_session.loc[df_session.choice.isna()==True,'choice']=0
+            tobeexpanded = df_session_groups.get_group(session_id)
+            all_alternatives = alternatives[repr(tobeexpanded[choice_groups].values.tolist()[0])]
+            comb_index = pd.MultiIndex.from_tuples(itertools.product(
+                [session_id], all_alternatives), names=['session_id', 'alter_id'])
+            df_session = tobeexpanded.set_index(['session_id', 'alter_id']).reindex(
+                comb_index).reset_index()
+            df_session.loc[df_session.choice.isna() == False, 'choice'] = 1
+            df_session.loc[df_session.choice.isna() == True, 'choice'] = 0
+            for var in choice_groups:
+                df_session[var] = df_session.groupby('session_id')[var].transform('first')
 
             # install alter_id characteristics (location)
-            df_session = df_session.merge(alter_data[alter_features], left_on='alter_id',right_on='idx', how='left')
+            merge_vars = choice_groups + ['alter_id']
+            df_session = df_session.merge(
+                alter_data, left_on=merge_vars, right_on=merge_vars, how='left')
 
             # install session_id characteristics (owner and/or firm)
-            df_session = df_session.merge(alter_data[session_features], left_on='session_id',right_on='poi_id', how='left')
+            df_session = df_session.merge(
+                session_data, left_on='session_id', right_on='session_id', how='left')
+
+            #TODO: add session-alternative variables
+            
+        #end of add expand option
         else:
             df_session = df_session_groups.get_group(session_id)
 
@@ -153,11 +168,11 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
 
         try:
             cost = model.train(loss, optimizer,
-                     df_session[MNL_features].values,
-                     df_session['choice'].values,
-                     l1_loss_weight = l1_loss_weight,  # when zero, no regularization
-                     l2_loss_weight = l2_loss_weight,  # when zero, no regularization
-                     gpu=gpu)
+                               df_session[MNL_features].values,
+                               df_session['choice'].values,
+                               l1_loss_weight=l1_loss_weight,  # when zero, no regularization
+                               l2_loss_weight=l2_loss_weight,  # when zero, no regularization
+                               gpu=gpu)
 
         except ValueError:
             if (verbose >= 1):
@@ -169,7 +184,8 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
 
         # save the gradients if asked
         if (save_gradients):
-            new_gradients = get_session_gradients(epoch_index, session_id, model.parameters())
+            new_gradients = get_session_gradients(
+                epoch_index, session_id, model.parameters())
             train_config['session_gradients'].extend(new_gradients)
 
         if (verbose >= 2):
@@ -202,14 +218,16 @@ def train_with_early_stopping(*, model_tuple, train_data, alter_data=None, sessi
 
     for epoch in range(epochs):
         if (expand):
-            epoch_loss = train_one_epoch(epoch_index=epoch,module_tuple=model_tuple,df_session_groups=train_data,train_config=train_config,
-            alter_data=alter_data, session_data=session_data)
+            epoch_loss = train_one_epoch(epoch_index=epoch, module_tuple=model_tuple, df_session_groups=train_data, train_config=train_config,
+                                         alter_data=alter_data, session_data=session_data)
         else:
-            epoch_loss = train_one_epoch(epoch_index=epoch,module_tuple=model_tuple,df_session_groups=train_data,train_config=train_config)
+            epoch_loss = train_one_epoch(
+                epoch_index=epoch, module_tuple=model_tuple, df_session_groups=train_data, train_config=train_config)
         loss_list.append(epoch_loss)
 
         if (verbose >= 1):
-            print('epoch:', epoch, ' loss:', epoch_loss, 'best_loss:', best_loss)
+            print('epoch:', epoch, ' loss:',
+                  epoch_loss, 'best_loss:', best_loss)
 
         if (epoch_loss - best_loss) < -early_stop_min_delta:
             # find the new minimal point, reset the clock
@@ -264,29 +282,37 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     expand = train_config.get('expand', [])
     alter_features = train_config.get('alter_features', [])
     session_features = train_config.get('session_features', [])
-    session_features = train_config.get('', [])
-    MNL_features=[]
+    MNL_features = []
     MNL_features.extend(session_features)
     MNL_features.extend(alter_features)
     train_config['MNL_features'] = MNL_features
 
-    alternatives={}
+    alternatives = {}
     if (expand):
-        choice_groups = train_config.get('choice_groups', [])   ##city_ope and NAICS
-        unique_values=df_training.drop_duplicates(choice_groups)[choice_groups]
+        choice_groups = train_config.get('choice_groups', [])
+        unique_values = df_training[choice_groups].drop_duplicates()
 
-        for group in unique_values:
-            cond = ''
-            for var in choice_groups:
-                cond = cond + ' ' + var + '==' + unique_values[var]
-            alternatives[group]=df_training[cond].alter_id.unique()    ##this assumes that all neighborhoods with no firm are not part of the choice set
+    for groupcombo in unique_values.index:
+        cond = ''
+        for var in choice_groups:
+            equalto = unique_values.loc[groupcombo][var]
+            if type(equalto)==str:
+                equalto = '"' + equalto + '"'
+            if cond == '':
+                cond = cond + var + '==' + str(equalto)
+            else:
+                cond = cond + ' & ' + var + '==' + str(equalto)
+        # this assumes that all neighborhoods with no firm are not part of the choice set
+        alternatives[repr(df_training.loc[groupcombo,choice_groups].values.tolist())] = df_training.query(cond).alter_id.unique()
 
-    if (len(MNL_features) == 0 & expand==False):
+    train_config['alternatives'] = alternatives
+
+    if (len(MNL_features) == 0 & expand == False):
         # use all the applicable features in the data, excluding session specific features
         MNL_features = get_default_MNL_features(df_training)
-        #set the config for the later use
+        # set the config for the later use
         train_config['MNL_features'] = MNL_features
-    elif (len(MNL_features) == 0 & expand==True):
+    elif (len(MNL_features) == 0 & expand == True):
         print('Error, expansion defined but no features')
 
     n_features = len(MNL_features)
@@ -313,14 +339,15 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     df_session_groups = df_training.groupby('session_id')
     if (expand):
         loss_list = train_with_early_stopping(model_tuple=model_tuple, train_data=df_session_groups, train_config=train_config,
-            alter_data=alter_data,session_data=session_data)
+                                              alter_data=alter_data, session_data=session_data)
     else:
-        loss_list = train_with_early_stopping(model_tuple=model_tuple, train_data=df_session_groups, train_config=train_config)
+        loss_list = train_with_early_stopping(
+            model_tuple=model_tuple, train_data=df_session_groups, train_config=train_config)
 
     return (model_tuple, loss_list)
 
 
-def test_model(model, df_testing, train_config, features_to_skip = None):
+def test_model(model, df_testing, train_config, features_to_skip=None):
     '''
         Test the model with the given data
         train_config: some parameters are used, i.e. MNL_feature, gpu
@@ -393,7 +420,7 @@ def mean_rank(pred_values, real_choice):
 def get_chosen_pred_value(pred_values, real_choice):
     return pd.Series(pred_values.reshape(-1)).dot(real_choice)
 
-##RCG INCLUDE HERE PROBABILITY OF STAYING AT HOME
+# RCG INCLUDE HERE PROBABILITY OF STAYING AT HOME
 
 
 def mean_chosen_pred_value(pred_values, real_choice):
@@ -404,7 +431,7 @@ def mean_chosen_pred_value(pred_values, real_choice):
     return get_chosen_pred_value(pred_values, real_choice) / real_choice.sum()
 
 
-def validate(model, df_testing, train_config, features_to_skip = None):
+def validate(model, df_testing, train_config, features_to_skip=None):
     '''
         Test the model with the given data
         train_config: some parameters are used, i.e. MNL_feature, gpu
@@ -421,7 +448,7 @@ def validate(model, df_testing, train_config, features_to_skip = None):
         MNL_features = get_default_MNL_features(df_testing)
 
     session_size = []
-    session_num_chosen_choices = [] # the number of chosen choices
+    session_num_chosen_choices = []  # the number of chosen choices
     session_rank = []
     session_pred_value = []
     # the maximum probability that is assigned to an alternative within a session.
@@ -479,16 +506,20 @@ def summarize_KPIs(df_session_KPIs, n_features):
 
     # calculate the percentile, LESS THAN and EQUAL to the given score
     KPI_summary['top_1_rank_quantile'] = \
-          stats.percentileofscore(df_session_KPIs['rank_of_chosen_one'], 1, kind='weak')
+        stats.percentileofscore(
+            df_session_KPIs['rank_of_chosen_one'], 1, kind='weak')
 
     KPI_summary['top_5_rank_quantile'] = \
-          stats.percentileofscore(df_session_KPIs['rank_of_chosen_one'], 5, kind='weak')
+        stats.percentileofscore(
+            df_session_KPIs['rank_of_chosen_one'], 5, kind='weak')
 
     KPI_summary['top_10_rank_quantile'] = \
-          stats.percentileofscore(df_session_KPIs['rank_of_chosen_one'], 10, kind='weak')
+        stats.percentileofscore(
+            df_session_KPIs['rank_of_chosen_one'], 10, kind='weak')
 
     # The ratio between the rank of the chosen alternative and the number of alternatives
-    rank_ratio = (df_session_KPIs['rank_of_chosen_one'] / df_session_KPIs['session_size'])
+    rank_ratio = (
+        df_session_KPIs['rank_of_chosen_one'] / df_session_KPIs['session_size'])
     KPI_summary['mean_rank_ratio'] = rank_ratio.mean()
     KPI_summary['median_rank_ratio'] = rank_ratio.median()
 
@@ -499,15 +530,18 @@ def summarize_KPIs(df_session_KPIs, n_features):
     KPI_summary['median_probability'] = df_session_KPIs['prob_of_chosen_one'].median()
 
     # the difference of probability values between the chosen one and the predicted one
-    prob_diff = (df_session_KPIs['prob_of_chosen_one'] - df_session_KPIs['max_prob'])
+    prob_diff = (
+        df_session_KPIs['prob_of_chosen_one'] - df_session_KPIs['max_prob'])
     KPI_summary['mean_probability_diff'] = prob_diff.mean()
     KPI_summary['median_probability_diff'] = prob_diff.median()
 
     # the log likelihood for each chosen alternative is negative. The higher the probability,
     #  the closer the log likelihood is to the zero, (i.e. the lower the absolute value)
-    KPI_summary['log_likelihood'] = np.log(df_session_KPIs['prob_of_chosen_one']).sum()
+    KPI_summary['log_likelihood'] = np.log(
+        df_session_KPIs['prob_of_chosen_one']).sum()
 
-    KPI_summary['mean_log_likelihood'] = np.log(df_session_KPIs['prob_of_chosen_one']).mean()
+    KPI_summary['mean_log_likelihood'] = np.log(
+        df_session_KPIs['prob_of_chosen_one']).mean()
 
     # AIC <- 2*length(model$coefficients) - 2*model$loglikelihood
     # Akaike Information Criterion, which estimates the quality of the model, (i.e. the lower, the better)
