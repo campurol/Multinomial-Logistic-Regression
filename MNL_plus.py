@@ -1,30 +1,4 @@
-'''
 
-###################################################################################
-
-The MIT License (MIT)
-
-Copyright (c) 2018 Lisong Guo <lisong.guo@me.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-###################################################################################
-'''
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -128,7 +102,7 @@ def init_model(train_config):
     return (model, loss, optimizer)
 
 
-def train_one_epoch(epoch_index, module_tuple, df_session_groups, train_config):
+def train_one_epoch(epoch_index, module_tuple, df_session_groups, alter_data, session_data, train_config):
     '''
     '''
     (model, loss, optimizer) = module_tuple
@@ -139,15 +113,47 @@ def train_one_epoch(epoch_index, module_tuple, df_session_groups, train_config):
     l2_loss_weight = train_config['l2_loss_weight']
     MNL_features = train_config['MNL_features']
     save_gradients = train_config.get('save_gradients', False)
+    expand = train_config.get('expand', False)
+
+    if (expand):
+        alter_features = train_config['alter_features']  
+        session_features = train_config['session_features']
+        alternatives = train_config['alternatives']
 
     total_cost = 0
     if (verbose >= 2):
         print('Num. sessions:', len(df_session_groups))
     
     for session_id in list(df_session_groups.groups.keys()):
-    
-        df_session = df_session_groups.get_group(session_id)
-    
+        
+        #Add expand option
+        #This option creates all combinations of session_id, alter_id and then the choice
+        #Then it installs the session and alter_features
+        #from alter_data and session_data
+        if (expand):
+            df_session = df_session_groups.get_group(session_id)
+
+
+        for group in unique_values:
+            cond = ''
+            for var in choice_groups:
+                cond = cond + ' ' + var'=='unique_values[var]
+            alternatives[group]=df_training[cond].alter_id.unique()  
+
+            all_alternatives = alternatives[df_session['city_ope'].values]
+            comb_index = pd.MultiIndex.from_tuples(itertools.product([session_id], all_alternatives), names=['session_id','alter_id'])
+            df_session = aux.set_index(['session_id','alter_id']).reindex(comb_index).reset_index()
+            df_session.loc[df_session.choice.isna()==False,'choice']=1
+            df_session.loc[df_session.choice.isna()==True,'choice']=0
+
+            # install alter_id characteristics (location)
+            df_session = df_session.merge(alter_data[alter_features], left_on='alter_id',right_on='idx', how='left')
+
+            # install session_id characteristics (owner and/or firm)
+             df_session = df_session.merge(alter_data[session_features], left_on='session_id',right_on='poi_id', how='left')        
+        else: 
+            df_session = df_session_groups.get_group(session_id)
+
         if (verbose >= 2):
             print('-----------------------')
             print('session_id:', session_id)
@@ -157,8 +163,8 @@ def train_one_epoch(epoch_index, module_tuple, df_session_groups, train_config):
             cost = model.train(loss, optimizer,
                      df_session[MNL_features].values,
                      df_session['choice'].values,
-                     l1_loss_weight = l1_loss_weight,  # when zeor, no regularization
-                     l2_loss_weight = l2_loss_weight,  # when zeor, no regularization
+                     l1_loss_weight = l1_loss_weight,  # when zero, no regularization
+                     l2_loss_weight = l2_loss_weight,  # when zero, no regularization
                      gpu=gpu)
         
         except ValueError:
@@ -183,7 +189,7 @@ def train_one_epoch(epoch_index, module_tuple, df_session_groups, train_config):
     return total_cost
 
 
-def train_with_early_stopping(model_tuple, train_data, train_config):
+def train_with_early_stopping(model_tuple, train_data, alter_data, session_data, train_config):
     '''
     '''
     wait = 0
@@ -202,7 +208,7 @@ def train_with_early_stopping(model_tuple, train_data, train_config):
         train_config['session_gradients'] = []
     
     for epoch in range(epochs):
-        epoch_loss = train_one_epoch(epoch, model_tuple, train_data, train_config)
+        epoch_loss = train_one_epoch(epoch, model_tuple, train_data, alter_data, session_data train_config)
         loss_list.append(epoch_loss)
         
         if (verbose >= 1):
@@ -258,15 +264,33 @@ def get_default_MNL_features(df_data):
 def run_training(df_training, train_config, model_tuple=None):
     '''
     '''
-    MNL_features = train_config.get('MNL_features', [])
+    expand = train_config.get('expand', [])
+    alter_features = train_config.get('alter_features', [])  
+    session_features = train_config.get('session_features', [])
+    session_features = train_config.get('', [])
+    MNL_features = alter_features.append(session_features)
+    train_config['MNL_features'] = MNL_features
     
+    alternatives={}
+    if (expand):
+        choice_groups = train_config.get('choice_groups', [])   ##city_ope and NAICS
+        unique_values=df_training.drop_duplicates(choice_groups)[choice_groups]
+
+        for group in unique_values:
+            cond = ''
+            for var in choice_groups:
+                cond = cond + ' ' + var'=='unique_values[var]
+            alternatives[group]=df_training[cond].alter_id.unique()    ##this assumes that all neighborhoods with no firm are not part of the choice set
+          
     if (len(MNL_features) == 0):
-        # use all the applicable features in the data, excluding session specific features
-        MNL_features = get_default_MNL_features(df_training)
-        
-        # set the config for the later use
-        train_config['MNL_features'] = MNL_features
-    
+        if (expand):
+            break;
+        else: 
+            # use all the applicable features in the data, excluding session specific features
+            MNL_features = get_default_MNL_features(df_training)
+            #set the config for the later use
+            train_config['MNL_features'] = MNL_features
+            
     n_features = len(MNL_features)
     print('Num features:', n_features)
     print('========================')
@@ -367,6 +391,8 @@ def mean_rank(pred_values, real_choice):
 
 def get_chosen_pred_value(pred_values, real_choice):
     return pd.Series(pred_values.reshape(-1)).dot(real_choice)
+
+##RCG INCLUDE HERE PROBABILITY OF STAYING AT HOME
 
 
 def mean_chosen_pred_value(pred_values, real_choice):
