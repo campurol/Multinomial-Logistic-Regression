@@ -18,34 +18,33 @@ class MNL(nn.Module):
     '''
     def __init__(self, feature_list):
         super().__init__()   #MNL, self
-        
+
         self.feature_list = feature_list
         input_dim = len(feature_list)
         # a linear layer without bias
         self.linear = torch.nn.Linear(input_dim, 1, bias=False)
-        self.softmax = torch.nn.Softmax()
-    
-    
+        self.softmax = torch.nn.Softmax(dim=1)
+
+
     def forward(self, x):
         # expect the input to be a session of alternatives
         util_values = self.linear(x)
-        
+
         #!! a trik to prevent the underflow (divide by zero) in the softmax later
         util_values = util_values + 2
-        
-        # transpose the result vector before the softmax 
+
+        # transpose the result vector before the softmax
         util_values = torch.t(util_values)
-        
+
         # convert the softmax values to binary values
         #max_values, indices = self.softmax(util_values).max()
-    
+
         #results = np.zeros(len(x))
         #results[indices] = 1
         #results = np.transpose(results)
-        
         return torch.t(self.softmax(util_values))
 
-    
+
     def l1_loss(self, l1_weight=0.01):
         '''
             Return: L1 regularization on all the parameters
@@ -54,7 +53,7 @@ class MNL(nn.Module):
         for param in self.parameters():
             params_list.append(param.view(-1))
         torch_params = torch.cat(params_list)
-            
+
         return l1_weight * (torch.abs(torch_params).sum())
 
 
@@ -62,11 +61,11 @@ class MNL(nn.Module):
         '''
             Return: L2 regularization on all the parameters
         '''
-        params_list = []    
+        params_list = []
         for param in self.parameters():
             params_list.append(param.view(-1))
         torch_params = torch.cat(params_list)
-            
+
         return l2_weight * (torch.sqrt(torch.pow(torch_params, 2).sum()))
 
 
@@ -108,7 +107,7 @@ class MNL(nn.Module):
 
         else:
             output = data_loss
-        
+
         # Underflow in the loss calculation
         if math.isnan(output.data.item()):
             raise ValueError('NaN detected')
@@ -145,20 +144,20 @@ class MNL(nn.Module):
             tensorX = torch.from_numpy(x_val.values).double()
         else:
             tensorX = torch.from_numpy(x_val).double()
-    
+
         if (is_gpu):
             x = Variable(tensorX.type(torch.cuda.DoubleTensor), requires_grad=False)
         else:
             x = Variable(tensorX, requires_grad=False)
 
         output = self.forward(x)
-    
+
         if (is_gpu):
             # get the data from the memory of GPU into CPU
             prob = output.cpu().data.numpy()
         else:
             prob = output.data.numpy()
-        
+
         if (binary):
             # convert the softmax values to binary values
             max_indice = prob.argmax(axis=0)
@@ -179,22 +178,22 @@ class MNL(nn.Module):
                 return param
         return None
 
-    
+
     def print_params(self):
         '''
             Print all the parameters within the model
         '''
         params = self.get_params()[0]
-        
+
         if (params.is_cuda):
             values = params.cpu().data.numpy()
         else:
             values = params.data.numpy()
-        
+
         for index, feature in enumerate(self.feature_list):
             print(feature, ':', values[index])
-    
-    
+
+
     def get_feature_weight(self, feature_name):
         ''' Retrieve the weight of the desired feature '''
         params = self.get_params()[0]
@@ -203,15 +202,15 @@ class MNL(nn.Module):
             param_values = params.cpu().data.numpy()
         else:
             param_values = params.data.numpy()
-        
+
         for index, feature in enumerate(self.feature_list):
             if (feature_name == feature):
                 return param_values[index]
-        
+
         # did not find the specified feature
         return None
-    
-    
+
+
     def get_feature_weights(self):
         ''' get the dictionary of feature weights '''
         params = self.get_params()[0]
@@ -220,21 +219,21 @@ class MNL(nn.Module):
             param_values = params.cpu().data.numpy()
         else:
             param_values = params.data.numpy()
-        
+
         feature_weights = {}
-        
+
         for index, feature in enumerate(self.feature_list):
             feature_weights[feature] = param_values[index]
-        
+
         return feature_weights
-    
-    
+
+
     def set_feature_weight(self, feature_name, value):
         ''' Reset the specified feature weight
         '''
         params = self.get_params()[0]
         is_found = False
-        
+
         try:
             for index, feature in enumerate(self.feature_list):
                 if (feature_name == feature):
@@ -245,7 +244,7 @@ class MNL(nn.Module):
             #print('RuntimeError: ', e)
             #print('One can ignore this error, since the parameters are still updated !')
             pass
-        
+
         return is_found
 
 
@@ -293,10 +292,8 @@ def build_model(input_dim):
     model = torch.nn.Sequential()
     model.add_module("linear",
                      torch.nn.Linear(input_dim, 1, bias=False))
-    
-    # We need the softmax layer here for the binary cross entropy later 
-    model.add_module('softmax', torch.nn.Softmax())
-    
+
+    # We need the softmax layer here for the binary cross entropy later
+    model.add_module('softmax', torch.nn.Softmax(dim=1))
+
     return model
-
-

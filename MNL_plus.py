@@ -135,14 +135,28 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
 
         #start of add expand option
         if (expand):
-            tobeexpanded = df_session_groups.get_group(session_id)
+            #load choice (should be len==1)
+            tobeexpanded = df_session_groups.get_group(session_id).set_index(['session_id', 'alter_id'])
+            assert len(tobeexpanded) == 1
+            if (verbose >= 2):
+                print(f'Working on session {session_id}')
+            if (verbose >= 3):
+                print(tobeexpanded)
+
+            #extract all possible alternatives for the specific choice_group that the chooser of the session belongs
             all_alternatives = alternatives[repr(tobeexpanded[choice_groups].values.tolist()[0])]
+
+            #create all possible combinations (one per session_id - alter_id)
             comb_index = pd.MultiIndex.from_tuples(itertools.product(
                 [session_id], all_alternatives), names=['session_id', 'alter_id'])
-            df_session = tobeexpanded.set_index(['session_id', 'alter_id']).reindex(
+            df_session = tobeexpanded.reindex(
                 comb_index).reset_index()
+
+            #create choice variable
             df_session.loc[df_session.choice.isna() == False, 'choice'] = 1
             df_session.loc[df_session.choice.isna() == True, 'choice'] = 0
+
+            #fillout missing values for the expanded dataset
             for var in choice_groups:
                 df_session[var] = df_session.groupby('session_id')[var].transform('first')
 
@@ -156,7 +170,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
                 session_data, left_on='session_id', right_on='session_id', how='left')
 
             #TODO: add session-alternative variables
-            
+
         #end of add expand option
         else:
             df_session = df_session_groups.get_group(session_id)
@@ -188,7 +202,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
                 epoch_index, session_id, model.parameters())
             train_config['session_gradients'].extend(new_gradients)
 
-        if (verbose >= 2):
+        if (verbose >= 3):
             print('train cost:', cost)
             predY = model.predict(df_session[MNL_features].values)
             print('Real Y-value:', df_session['choice'].values)
@@ -287,25 +301,25 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     MNL_features.extend(alter_features)
     train_config['MNL_features'] = MNL_features
 
-    alternatives = {}
     if (expand):
+        alternatives = {}
         choice_groups = train_config.get('choice_groups', [])
         unique_values = df_training[choice_groups].drop_duplicates()
 
-    for groupcombo in unique_values.index:
-        cond = ''
-        for var in choice_groups:
-            equalto = unique_values.loc[groupcombo][var]
-            if type(equalto)==str:
-                equalto = '"' + equalto + '"'
-            if cond == '':
-                cond = cond + var + '==' + str(equalto)
-            else:
-                cond = cond + ' & ' + var + '==' + str(equalto)
-        # this assumes that all neighborhoods with no firm are not part of the choice set
-        alternatives[repr(df_training.loc[groupcombo,choice_groups].values.tolist())] = df_training.query(cond).alter_id.unique()
+        for groupcombo in unique_values.index:
+            cond = ''
+            for var in choice_groups:
+                equalto = unique_values.loc[groupcombo][var]
+                if type(equalto)==str:
+                    equalto = '"' + equalto + '"'
+                if cond == '':
+                    cond = cond + var + '==' + str(equalto)
+                else:
+                    cond = cond + ' & ' + var + '==' + str(equalto)
+            # this assumes that all neighborhoods with no firm are not part of the choice set
+            alternatives[repr(df_training.loc[groupcombo,choice_groups].values.tolist())] = df_training.query(cond).alter_id.unique()
 
-    train_config['alternatives'] = alternatives
+            train_config['alternatives'] = alternatives
 
     if (len(MNL_features) == 0 & expand == False):
         # use all the applicable features in the data, excluding session specific features
