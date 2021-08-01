@@ -19,7 +19,7 @@ A typical scenario to apply MNL model is to predict the choice of customer in a 
 
 - `Mint.py`: this is a minimized model that is intended for inference only, with on dependency on the Pytorch framework. Once one obtains a model with the `MNL` module, one could *export" the trained model to `Mint` and deploy it in the running time with minimal dependencies (panda + numpy).
 
-- `nmlogit.ado`:
+- `nmlogit.ado`: TBD
 
 ### Usage
 
