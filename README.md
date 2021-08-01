@@ -1,8 +1,12 @@
-# Multinomial Logistic Regression
+# Multinomial Logistic Regression using PyTorch
 
 This repository provides a Multinomial Logistic regression model (*a.k.a* **MNL**) for the classification problem of multiple classes.
 
-The novelity of this model is that it is implemented with the deep learning framework 'Pytorch'.
+It's a fork of liaison/Multinomial-Logistic-Regression that includes the possibility to expand the data if the data provided is at the `session-chosen-alternative` level instead of `session-alternative` level.
+
+I also includes an implementation for using this in `Stata'.
+
+The novelity of this model is that it is implemented with the deep learning framework 'Pytorch'. This allows the possibility to handle multiple choice sets and also multiple alternatives. Current implementations only allow for few alternatives.
 
 A typical scenario to apply MNL model is to predict the choice of customer in a collection of alternatives, which is often referred as Customer Choice Modeling. As a clarification of terminology, the alternative might also be referred as 'option', and the collection of alternatives might be called as 'session'.
 
