@@ -1,14 +1,17 @@
 import delimited "/Users/rcampusanog/Dropbox/Respaldo/Academico/UofT/Ideas/location/code/nmlogit/data/train_SINBKK_RT_B.csv", clear
 keep if choice==1
 expand 2, generate(expanded)
+replace session_id = session_id * (expanded + 1)
+
 expand 2, generate(expanded2)
+replace session_id = session_id * (expanded2 + 2)
+
 replace session_id = session_id * 2 if expanded==1
 generate group = 1 if expanded ==0 & expanded2==0
 replace group = 2 if expanded ==1 & expanded2==0
 replace group = 3 if expanded ==1 & expanded2==1
 replace group = 4 if group==.
 
-replace session_id = session_id * group
 
 replace alter_id = floor(60*runiform()) if group==1 | group==4
 replace alter_id = floor(120*runiform()) if group==2
