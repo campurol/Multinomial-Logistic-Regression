@@ -73,8 +73,8 @@ def init_model(train_config):
         loss = torch.nn.BCELoss()
     elif (loss_func == 'MaxLogLikelihood'):
         loss = MaxLogLikelihoodLoss()
-
-    #loss = torch.nn.CrossEntropyLoss(size_average=True)
+    elif (loss_func == 'CrossEntropyLoss'):
+        loss = torch.nn.CrossEntropyLoss(size_average=True)
 
     if (optimizer_method == 'SGD'):
         # e.g. lr = 0.01/ 1e-2
@@ -106,8 +106,51 @@ def init_model(train_config):
 
     return (model, loss, optimizer)
 
+def get_expanded_data(tobeexpanded, train_config, alter_data, session_data):
 
-def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=None, session_data=None, train_config):
+    verbose = train_config['verbose']
+    alter_features = train_config['alter_features']
+    session_features = train_config['session_features']
+    alternatives = train_config['alternatives']
+    choice_groups = train_config.get(
+        'choice_groups', [])  # city_ope and NAICS
+
+    #assert len(tobeexpanded) == 1
+    if (verbose >= 2):
+        print(f'Working on session {session_id}')
+    if (verbose >= 3):
+        print(tobeexpanded)
+
+    tobeexpanded['all_altern'] = tobeexpanded.apply(lambda row: alternatives[repr(row[choice_groups].values.tolist())], axis = 1)
+    df_session = tobeexpanded.explode('all_altern')
+    df_session = df_session.reset_index()
+
+    #create choice variable
+    df_session.loc[df_session.alter_id == df_session.all_altern, 'choice'] = 1
+    df_session.loc[df_session.alter_id != df_session.all_altern, 'choice'] = 0
+    df_session = df_session.drop(columns=['alter_id'])
+    df_session = df_session.rename(columns={'all_altern':'alter_id'})
+
+    #fillout missing values for the expanded dataset
+    for var in choice_groups:
+        df_session[var] = df_session.groupby('session_id')[var].transform('first')
+
+    # install alter_id characteristics (location)
+    merge_vars = choice_groups + ['alter_id']
+    df_session = df_session.merge(
+        alter_data, left_on=merge_vars, right_on=merge_vars, how='left')
+
+    # install session_id characteristics (owner and/or firm)
+    df_session = df_session.merge(
+            session_data, left_on='session_id', right_on='session_id', how='left')
+
+    #TODO: add session-alternative variables
+    if train_config['session_alter_fn']:
+        session_alter_features=train_config['session_alter_features']
+        df_session.loc[:,session_alter_features]=train_config['session_alter_fn'](df_session)
+    return df_session
+
+def train_one_epoch(*, epoch_index, module_tuple, df_sessions, df_session_groups, alter_data=None, session_data=None, train_config):
     '''
     '''
     (model, loss, optimizer) = module_tuple
@@ -131,54 +174,22 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
     if (verbose >= 2):
         print('Num. sessions:', len(df_session_groups))
 
-    for session_id in list(df_session_groups.groups.keys()):
-
-        #start of add expand option
+    datalist=list(df_session_groups.groups.keys())
+    train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
+    for batch_id, batch in enumerate(train_loader):
+        batchlist = batch.tolist()
         if (expand):
-            #load choice (should be len==1)
-            tobeexpanded = df_session_groups.get_group(session_id).set_index(['session_id', 'alter_id'])
-            assert len(tobeexpanded) == 1
-            if (verbose >= 2):
-                print(f'Working on session {session_id}')
-            if (verbose >= 3):
-                print(tobeexpanded)
-
-            #extract all possible alternatives for the specific choice_group that the chooser of the session belongs
-            all_alternatives = alternatives[repr(tobeexpanded[choice_groups].values.tolist()[0])]
-
-            #create all possible combinations (one per session_id - alter_id)
-            comb_index = pd.MultiIndex.from_tuples(itertools.product(
-                [session_id], all_alternatives), names=['session_id', 'alter_id'])
-            df_session = tobeexpanded.reindex(
-                comb_index).reset_index()
-
-            #create choice variable
-            df_session.loc[df_session.choice.isna() == False, 'choice'] = 1
-            df_session.loc[df_session.choice.isna() == True, 'choice'] = 0
-
-            #fillout missing values for the expanded dataset
-            for var in choice_groups:
-                df_session[var] = df_session.groupby('session_id')[var].transform('first')
-
-            # install alter_id characteristics (location)
-            merge_vars = choice_groups + ['alter_id']
-            df_session = df_session.merge(
-                alter_data, left_on=merge_vars, right_on=merge_vars, how='left')
-
-            # install session_id characteristics (owner and/or firm)
-            df_session = df_session.merge(
-                session_data, left_on='session_id', right_on='session_id', how='left')
-
-            #TODO: add session-alternative variables
-
-        #end of add expand option
+            tobeexpanded = df_sessions.query("session_id in @batchlist").set_index(['session_id', 'alter_id'])
+            df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
         else:
-            df_session = df_session_groups.get_group(session_id)
+            df_session = df_sessions.query("session_id in @batchlist").set_index(['session_id', 'alter_id'])
 
         if (verbose >= 2):
             print('-----------------------')
-            print('session_id:', session_id)
-            print('No. alternatives:', len(df_session))
+            print('batch_id:', batch_id)
+            print('No. Sessions:', len(df_session.session_id.unique()))
+            print('No. alternatives:', len(df_session.alter_id.unique()))
+            print('No. Observations:', len(df_session))
 
         try:
             cost = model.train(loss, optimizer,
@@ -190,7 +201,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
 
         except ValueError:
             if (verbose >= 1):
-                print('loss underflow in session: ', session_id)
+                print('loss underflow in batch: ', batch_id)
             # skip this session
             continue
 
@@ -199,7 +210,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
         # save the gradients if asked
         if (save_gradients):
             new_gradients = get_session_gradients(
-                epoch_index, session_id, model.parameters())
+                epoch_index, batch_id, model.parameters())
             train_config['session_gradients'].extend(new_gradients)
 
         if (verbose >= 3):
@@ -211,7 +222,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_session_groups, alter_data=
     return total_cost
 
 
-def train_with_early_stopping(*, model_tuple, train_data, alter_data=None, session_data=None, train_config):
+def train_with_early_stopping(*, model_tuple, train_data, train_grouped_data, alter_data=None, session_data=None, train_config):
     '''
     '''
     wait = 0
@@ -232,11 +243,11 @@ def train_with_early_stopping(*, model_tuple, train_data, alter_data=None, sessi
 
     for epoch in range(epochs):
         if (expand):
-            epoch_loss = train_one_epoch(epoch_index=epoch, module_tuple=model_tuple, df_session_groups=train_data, train_config=train_config,
+            epoch_loss = train_one_epoch(epoch_index=epoch, module_tuple=model_tuple, df_sessions=train_data, df_session_groups=train_grouped_data, train_config=train_config,
                                          alter_data=alter_data, session_data=session_data)
         else:
             epoch_loss = train_one_epoch(
-                epoch_index=epoch, module_tuple=model_tuple, df_session_groups=train_data, train_config=train_config)
+                epoch_index=epoch, module_tuple=model_tuple, df_sessions=train_data, df_session_groups=train_grouped_data, train_config=train_config)
         loss_list.append(epoch_loss)
 
         if (verbose >= 1):
@@ -259,7 +270,7 @@ def train_with_early_stopping(*, model_tuple, train_data, alter_data=None, sessi
     return loss_list
 
 
-def get_session_gradients(epoch_index, session_id, parameters):
+def get_session_gradients(epoch_index, batch_id, parameters):
     '''
         retrieve the gradient values from the Parameter of gradient
     '''
@@ -272,7 +283,7 @@ def get_session_gradients(epoch_index, session_id, parameters):
 
         res.append({
             'epoch_id': epoch_index,
-            'session_id': session_id,
+            'batch_id': batch_id,
             'mean_abs_gradients': np.mean(np.abs(gradients)),
             'std_abs_gradients': np.std(np.abs(gradients)),
             'gradients': gradients})
@@ -289,37 +300,40 @@ def get_default_MNL_features(df_data):
     return sorted(set(df_data.columns.values) -
                   set(['session_id', 'alter_id', 'choice']))
 
+def get_alternatives(df_training, train_config):
+    alternatives = {}
+    choice_groups = train_config.get('choice_groups', [])
+    unique_values = df_training[choice_groups].drop_duplicates()
+
+    for groupcombo in unique_values.index:
+        cond = ''
+        for var in choice_groups:
+            equalto = unique_values.loc[groupcombo][var]
+            if type(equalto)==str:
+                equalto = '"' + equalto + '"'
+            if cond == '':
+                cond = cond + var + '==' + str(equalto)
+            else:
+                cond = cond + ' & ' + var + '==' + str(equalto)
+        # this assumes that all neighborhoods with no firm are not part of the choice set
+        alternatives[repr(df_training.loc[groupcombo,choice_groups].values.tolist())] = df_training.query(cond).alter_id.unique()
+
+    return alternatives
 
 def run_training(*, df_training, train_config, alter_data=None, session_data=None, model_tuple=None):
     '''
     '''
+    verbose = train_config.get('verbose', [])
     expand = train_config.get('expand', [])
     alter_features = train_config.get('alter_features', [])
     session_features = train_config.get('session_features', [])
-    MNL_features = []
-    MNL_features.extend(session_features)
-    MNL_features.extend(alter_features)
+    session_alter_features = train_config.get('session_alter_features', [])
+    choice_groups = train_config.get('choice_groups', [])
+    MNL_features = alter_features + session_features + session_alter_features
     train_config['MNL_features'] = MNL_features
 
     if (expand):
-        alternatives = {}
-        choice_groups = train_config.get('choice_groups', [])
-        unique_values = df_training[choice_groups].drop_duplicates()
-
-        for groupcombo in unique_values.index:
-            cond = ''
-            for var in choice_groups:
-                equalto = unique_values.loc[groupcombo][var]
-                if type(equalto)==str:
-                    equalto = '"' + equalto + '"'
-                if cond == '':
-                    cond = cond + var + '==' + str(equalto)
-                else:
-                    cond = cond + ' & ' + var + '==' + str(equalto)
-            # this assumes that all neighborhoods with no firm are not part of the choice set
-            alternatives[repr(df_training.loc[groupcombo,choice_groups].values.tolist())] = df_training.query(cond).alter_id.unique()
-
-            train_config['alternatives'] = alternatives
+        train_config['alternatives'] = get_alternatives(df_training, train_config)
 
     if (len(MNL_features) == 0 & expand == False):
         # use all the applicable features in the data, excluding session specific features
@@ -332,8 +346,16 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     n_features = len(MNL_features)
     print('Num features:', n_features)
     print('========================')
-    print(train_config)
+    print('Alternative Features:', alter_features)
     print('========================')
+    print('Session Features:', session_features)
+    print('========================')
+    print('Group IDs:', choice_groups)
+    print('========================')
+
+    if (verbose>=2):
+        print(train_config)
+        print('========================')
 
     if (model_tuple is None):
         # Create a new model, other continue training on the existing model.
@@ -352,11 +374,11 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     # train with early stopping
     df_session_groups = df_training.groupby('session_id')
     if (expand):
-        loss_list = train_with_early_stopping(model_tuple=model_tuple, train_data=df_session_groups, train_config=train_config,
+        loss_list = train_with_early_stopping(model_tuple=model_tuple, train_data=df_training, train_grouped_data=df_session_groups, train_config=train_config,
                                               alter_data=alter_data, session_data=session_data)
     else:
         loss_list = train_with_early_stopping(
-            model_tuple=model_tuple, train_data=df_session_groups, train_config=train_config)
+            model_tuple=model_tuple, train_data=df_training, train_grouped_data=df_session_groups, train_config=train_config)
 
     return (model_tuple, loss_list)
 
@@ -454,6 +476,7 @@ def validate(model, df_testing, train_config, features_to_skip=None):
     '''
     df_session_groups = df_testing.groupby('session_id')
 
+    expand = train_config['expand']
     if (train_config['verbose']):
         print('Num of testing sessions:', len(df_session_groups))
 
@@ -463,14 +486,23 @@ def validate(model, df_testing, train_config, features_to_skip=None):
 
     session_size = []
     session_num_chosen_choices = []  # the number of chosen choices
+    # rank of chosen one
     session_rank = []
+    # the chosen probability
     session_pred_value = []
     # the maximum probability that is assigned to an alternative within a session.
     session_max_prob = []
+    # the second maximum probability
+    # the probability of opening at home
 
     for session_id in list(df_session_groups.groups.keys()):
 
-        df_session = df_session_groups.get_group(session_id)
+        #start of add expand option
+        if (expand):
+            tobeexpanded = df_session_groups.get_group(session_id).set_index(['session_id', 'alter_id'])
+            df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
+        else:
+            df_session = df_session_groups.get_group(session_id)
 
         if (features_to_skip == None):
             testing_data = df_session[MNL_features]
@@ -490,10 +522,10 @@ def validate(model, df_testing, train_config, features_to_skip=None):
         choice_value = df_session['choice'].values
         session_num_chosen_choices.append(choice_value.sum())
         session_size.append(len(df_session))
-        #session_pred_value.append(get_chosen_pred_value(predY, choice_value))
-        #session_rank.append(rank(predY, choice_value))
-        session_pred_value.append(mean_chosen_pred_value(predY, choice_value))
-        session_rank.append(mean_rank(predY, choice_value))
+        session_pred_value.append(get_chosen_pred_value(predY, choice_value))
+        session_rank.append(rank(predY, choice_value))
+        #session_pred_value.append(mean_chosen_pred_value(predY, choice_value))
+        #session_rank.append(mean_rank(predY, choice_value))
         session_max_prob.append(predY.max())
 
     df_session_KPIs = pd.DataFrame()
