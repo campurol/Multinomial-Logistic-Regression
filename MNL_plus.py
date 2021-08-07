@@ -46,8 +46,8 @@ class MaxLogLikelihoodLoss(torch.autograd.Function):
 
         # average over the number of samples
         n_samples = target.size()[0]
-        return torch.neg(torch.log(likelihood) / n_samples)
-
+        #return torch.neg(torch.log(likelihood) / n_samples)
+        return torch.neg(torch.log(likelihood))
 
 def init_model(train_config):
     '''
@@ -115,7 +115,6 @@ def get_expanded_data(tobeexpanded, train_config, alter_data, session_data):
     choice_groups = train_config.get(
         'choice_groups', [])  # city_ope and NAICS
 
-    #assert len(tobeexpanded) == 1
     if (verbose >= 2):
         print(f'Working on session {session_id}')
     if (verbose >= 3):
@@ -144,13 +143,15 @@ def get_expanded_data(tobeexpanded, train_config, alter_data, session_data):
     df_session = df_session.merge(
             session_data, left_on='session_id', right_on='session_id', how='left')
 
-    #TODO: add session-alternative variables
-    if train_config['session_alter_fn']:
-        session_alter_features=train_config['session_alter_features']
-        df_session.loc[:,session_alter_features]=train_config['session_alter_fn'](df_session)
+    # install session-alternative variables
+    if len(train_config['session_alter_fn'])!= 0:
+        for function in train_config['session_alter_fn']:
+            df_session[function] = train_config[function](df_session, train_config)
+
+    df_session = df_session.drop(columns=train_config['drop_vars'])
     return df_session
 
-def train_one_epoch(*, epoch_index, module_tuple, df_sessions, df_session_groups, alter_data=None, session_data=None, train_config):
+def train_one_epoch(*, epoch_index, module_tuple, df_sessions, alter_data=None, session_data=None, train_config):
     '''
     '''
     (model, loss, optimizer) = module_tuple
@@ -171,18 +172,26 @@ def train_one_epoch(*, epoch_index, module_tuple, df_sessions, df_session_groups
             'choice_groups', [])  # city_ope and NAICS
 
     total_cost = 0
+    df_session_groups = df_sessions.groupby('session_id')
     if (verbose >= 2):
         print('Num. sessions:', len(df_session_groups))
 
     datalist=list(df_session_groups.groups.keys())
     train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
-    for batch_id, batch in enumerate(train_loader):
-        batchlist = batch.tolist()
+    for batch_id, batchlist in enumerate(train_loader):
         if (expand):
-            tobeexpanded = df_sessions.query("session_id in @batchlist").set_index(['session_id', 'alter_id'])
+            batchlist=batchlist.tolist()
+            keep=df_sessions['session_id'].isin(batchlist)
+            tobeexpanded = df_sessions.loc[keep].set_index(['session_id', 'alter_id'])
             df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
+            print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(tobeexpanded)} expanded to {len(df_session)}')
+            #print(df_session.head())
+            #print(df_session.info())
         else:
-            df_session = df_sessions.query("session_id in @batchlist").set_index(['session_id', 'alter_id'])
+            batchlist=batchlist.tolist()
+            keep=df_sessions['session_id'].isin(batchlist)
+            df_session = df_sessions.loc[keep].reset_index()
+            print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(df_session)}')
 
         if (verbose >= 2):
             print('-----------------------')
@@ -195,6 +204,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_sessions, df_session_groups
             cost = model.train(loss, optimizer,
                                df_session[MNL_features].values,
                                df_session['choice'].values,
+                               pd.factorize(df_session['session_id'])[0],
                                l1_loss_weight=l1_loss_weight,  # when zero, no regularization
                                l2_loss_weight=l2_loss_weight,  # when zero, no regularization
                                gpu=gpu)
@@ -210,19 +220,19 @@ def train_one_epoch(*, epoch_index, module_tuple, df_sessions, df_session_groups
         # save the gradients if asked
         if (save_gradients):
             new_gradients = get_session_gradients(
-                epoch_index, batch_id, model.parameters())
+                epoch_index, batch_id, model.get_params())
             train_config['session_gradients'].extend(new_gradients)
 
         if (verbose >= 3):
             print('train cost:', cost)
-            predY = model.predict(df_session[MNL_features].values)
+            predY = model.predict(df_session[MNL_features].values,pd.factorize(df_session['session_id'])[0])
             print('Real Y-value:', df_session['choice'].values)
             print('Prediction:', predY)
 
     return total_cost
 
 
-def train_with_early_stopping(*, model_tuple, train_data, train_grouped_data, alter_data=None, session_data=None, train_config):
+def train_with_early_stopping(*, model_tuple, train_data, alter_data=None, session_data=None, train_config):
     '''
     '''
     wait = 0
@@ -243,11 +253,11 @@ def train_with_early_stopping(*, model_tuple, train_data, train_grouped_data, al
 
     for epoch in range(epochs):
         if (expand):
-            epoch_loss = train_one_epoch(epoch_index=epoch, module_tuple=model_tuple, df_sessions=train_data, df_session_groups=train_grouped_data, train_config=train_config,
+            epoch_loss = train_one_epoch(epoch_index=epoch, module_tuple=model_tuple, df_sessions=train_data, train_config=train_config,
                                          alter_data=alter_data, session_data=session_data)
         else:
             epoch_loss = train_one_epoch(
-                epoch_index=epoch, module_tuple=model_tuple, df_sessions=train_data, df_session_groups=train_grouped_data, train_config=train_config)
+                epoch_index=epoch, module_tuple=model_tuple, df_sessions=train_data, train_config=train_config)
         loss_list.append(epoch_loss)
 
         if (verbose >= 1):
@@ -274,12 +284,13 @@ def get_session_gradients(epoch_index, batch_id, parameters):
     '''
         retrieve the gradient values from the Parameter of gradient
     '''
+    parameters = parameters.grad
     res = []
     for param in parameters:
         if (param.is_cuda):
-            gradients = param[0].cpu().data.numpy()
+            gradients = param.cpu().data.numpy()
         else:
-            gradients = param[0].data.numpy()
+            gradients = param.data.numpy()
 
         res.append({
             'epoch_id': epoch_index,
@@ -329,7 +340,10 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     session_features = train_config.get('session_features', [])
     session_alter_features = train_config.get('session_alter_features', [])
     choice_groups = train_config.get('choice_groups', [])
+    extra_choice_feature = train_config.get('extra_choice_feature',[])
+    drop_vars = train_config.get('drop_vars',[])
     MNL_features = alter_features + session_features + session_alter_features
+    MNL_features = [x for x in MNL_features if x not in drop_vars]
     train_config['MNL_features'] = MNL_features
 
     if (expand):
@@ -346,9 +360,13 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
     n_features = len(MNL_features)
     print('Num features:', n_features)
     print('========================')
-    print('Alternative Features:', alter_features)
+    print('All features:', MNL_features)
     print('========================')
-    print('Session Features:', session_features)
+    print('Alternative Features:', [x for x in alter_features if x not in drop_vars]  )
+    print('========================')
+    print('Session Features:', [x for x in session_features if x not in drop_vars]  )
+    print('========================')
+    print('Loaded but dropped features:', drop_vars)
     print('========================')
     print('Group IDs:', choice_groups)
     print('========================')
@@ -372,18 +390,17 @@ def run_training(*, df_training, train_config, alter_data=None, session_data=Non
         print('Continue training...')
 
     # train with early stopping
-    df_session_groups = df_training.groupby('session_id')
     if (expand):
-        loss_list = train_with_early_stopping(model_tuple=model_tuple, train_data=df_training, train_grouped_data=df_session_groups, train_config=train_config,
+        loss_list = train_with_early_stopping(model_tuple=model_tuple, train_data=df_training, train_config=train_config,
                                               alter_data=alter_data, session_data=session_data)
     else:
         loss_list = train_with_early_stopping(
-            model_tuple=model_tuple, train_data=df_training, train_grouped_data=df_session_groups, train_config=train_config)
+            model_tuple=model_tuple, train_data=df_training, train_config=train_config)
 
     return (model_tuple, loss_list)
 
 
-def test_model(model, df_testing, train_config, features_to_skip=None):
+def test_model(model, df_testing, train_config, alter_data, session_data, features_to_skip=None):
     '''
         Test the model with the given data
         train_config: some parameters are used, i.e. MNL_feature, gpu
@@ -396,41 +413,57 @@ def test_model(model, df_testing, train_config, features_to_skip=None):
         print('Num of testing sessions:', len(df_session_groups))
 
     MNL_features = train_config['MNL_features']
+    expand = train_config['expand']
 
     # the testing data with the prediction value for each alternative
     ret = []
 
     session_list = list(df_session_groups.groups.keys())
 
-    # shuffle the sample list in each epoch
+    df_testing_groups = df_testing.groupby('session_id')
+    datalist=list(df_testing_groups.groups.keys())
+
     # Important for the "stochastic" probability of the gradient descent algorithm ?!
     if (train_config.get('shuffle_batch', True)):
         import random
-        random.shuffle(session_list)
+        random.shuffle(datalist)
 
-    for session_id in session_list:
-
-        # create a copy of the testing data
-        df_session = df_session_groups.get_group(session_id).copy()
-
-        if (features_to_skip == None):
-            testing_data = df_session[MNL_features]
+    train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
+    for batch_id, batchlist in enumerate(train_loader):
+        if (expand):
+            batchlist=batchlist.tolist()
+            keep=df_testing['session_id'].isin(batchlist)
+            tobeexpanded = df_testing.loc[keep].set_index(['session_id', 'alter_id'])
+            df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
+            print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(tobeexpanded)} expanded to {len(df_session)}')
+            #print(df_session.head())
+            #print(df_session.info())
         else:
-            # Set the values of feature-to-skip to be zero,
-            #   i.e. nullify the weights associated with the features to skip
-            testing_data = df_session[MNL_features].copy()
-            testing_data[features_to_skip] = 0
+            batchlist=batchlist.tolist()
+            keep=df_testing['session_id'].isin(batchlist)
+            df_session = df_testing.loc[keep].reset_index()
+            print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(df_session)}')
 
-        # predict a single session
-        predY = model.predict(testing_data.values, binary=False)
+        df_session_groups = df_session.groupby('session_id')
+        for session_id in list(df_session_groups.groups.keys()):
+            df_one_session = df_session_groups.get_group(session_id).copy()
 
-        # add the prediction column
-        df_session['pred_value'] = predY
+            if (features_to_skip == None):
+                testing_data = df_one_session[MNL_features].copy()
+            else:
+                # Set the values of feature-to-skip to be zero,
+                #   i.e. nullify the weights associated with the features to skip
+                testing_data = df_one_session[MNL_features].copy()
+                testing_data[features_to_skip] = 0
 
-        ret.append(df_session)
+            predY = model.predict(testing_data.values, pd.factorize(df_one_session['session_id'])[0], binary=False)
+
+            # add the prediction column
+            df_one_session['pred_value'] = predY
+
+            ret.append(df_one_session)
 
     # concatenate the dataframes along the rows
-    import pandas as pd
     return pd.concat(ret, axis=0)
 
 
@@ -456,8 +489,6 @@ def mean_rank(pred_values, real_choice):
 def get_chosen_pred_value(pred_values, real_choice):
     return pd.Series(pred_values.reshape(-1)).dot(real_choice)
 
-# RCG INCLUDE HERE PROBABILITY OF STAYING AT HOME
-
 
 def mean_chosen_pred_value(pred_values, real_choice):
     '''
@@ -467,7 +498,7 @@ def mean_chosen_pred_value(pred_values, real_choice):
     return get_chosen_pred_value(pred_values, real_choice) / real_choice.sum()
 
 
-def validate(model, df_testing, train_config, features_to_skip=None):
+def validate(model, df_testing, train_config, alter_data=None, session_data=None, features_to_skip=None):
     '''
         Test the model with the given data
         train_config: some parameters are used, i.e. MNL_feature, gpu
@@ -484,6 +515,10 @@ def validate(model, df_testing, train_config, features_to_skip=None):
     if (len(MNL_features) == 0):
         MNL_features = get_default_MNL_features(df_testing)
 
+
+    session_batch = []
+    session_batch_size = []
+    session_batch_expanded_size = []
     session_size = []
     session_num_chosen_choices = []  # the number of chosen choices
     # rank of chosen one
@@ -492,49 +527,87 @@ def validate(model, df_testing, train_config, features_to_skip=None):
     session_pred_value = []
     # the maximum probability that is assigned to an alternative within a session.
     session_max_prob = []
+    session_second_prob = []
+    session_third_prob = []
     # the second maximum probability
     # the probability of opening at home
+    if 'athome' in MNL_features:
+        home_rank = []
+        session_home_value = []
 
-    for session_id in list(df_session_groups.groups.keys()):
+    df_testing_groups = df_testing.groupby('session_id')
+    datalist=list(df_testing_groups.groups.keys())
+    # Important for the "stochastic" probability of the gradient descent algorithm ?!
+    if (train_config.get('shuffle_batch', True)):
+        import random
+        random.shuffle(datalist)
 
-        #start of add expand option
+    train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
+    for batch_id, batchlist in enumerate(train_loader):
         if (expand):
-            tobeexpanded = df_session_groups.get_group(session_id).set_index(['session_id', 'alter_id'])
+            batchlist=batchlist.tolist()
+            keep=df_testing['session_id'].isin(batchlist)
+            tobeexpanded = df_testing.loc[keep].set_index(['session_id', 'alter_id'])
             df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
+            print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(tobeexpanded)} expanded to {len(df_session)}')
+            #print(df_session.head())
+            #print(df_session.info())
         else:
-            df_session = df_session_groups.get_group(session_id)
+            batchlist=batchlist.tolist()
+            keep=df_testing['session_id'].isin(batchlist)
+            df_session = df_testing.loc[keep].reset_index()
+            print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(df_session)}')
 
-        if (features_to_skip == None):
-            testing_data = df_session[MNL_features]
-        else:
-            # Set the values of feature-to-skip to be zero,
-            #   i.e. nullify the weights associated with the features to skip
-            testing_data = df_session[MNL_features].copy()
-            testing_data[features_to_skip] = 0
+        df_session_groups = df_session.groupby('session_id')
+        for session_id in list(df_session_groups.groups.keys()):
+            df_one_session = df_session_groups.get_group(session_id).copy()
 
-        predY = model.predict(testing_data.values, binary=False)
+            if (features_to_skip == None):
+                testing_data = df_one_session[MNL_features].copy()
+            else:
+                # Set the values of feature-to-skip to be zero,
+                #   i.e. nullify the weights associated with the features to skip
+                testing_data = df_one_session[MNL_features].copy()
+                testing_data[features_to_skip] = 0
 
-        #print('SessionId:', session_id)
-        #print('AlterId:', df_session['alter_id'].values)
-        #print('Real Y-value:', df_session['choice'].values)
-        #print('Prediction:', predY)
+            predY = model.predict(testing_data.values, pd.factorize(df_one_session['session_id'])[0], binary=False)
 
-        choice_value = df_session['choice'].values
-        session_num_chosen_choices.append(choice_value.sum())
-        session_size.append(len(df_session))
-        session_pred_value.append(get_chosen_pred_value(predY, choice_value))
-        session_rank.append(rank(predY, choice_value))
-        #session_pred_value.append(mean_chosen_pred_value(predY, choice_value))
-        #session_rank.append(mean_rank(predY, choice_value))
-        session_max_prob.append(predY.max())
+            #print('SessionId:', session_id)
+            #print('AlterId:', df_session['alter_id'].values)
+            #print('Real Y-value:', df_session['choice'].values)
+            #print('Prediction:', predY)
+
+            choice_value = df_one_session['choice'].values
+            session_num_chosen_choices.append(choice_value.sum())
+            session_size.append(len(df_one_session))
+            session_pred_value.append(get_chosen_pred_value(predY, choice_value))
+            session_rank.append(rank(predY, choice_value))
+            #session_pred_value.append(mean_chosen_pred_value(predY, choice_value))
+            #session_rank.append(mean_rank(predY, choice_value))
+            session_second_prob.append(predY.max()) ##second max probability, third max probabiity,
+            session_third_prob.append(predY.max()) ##second max probability, third max probabiity,
+            session_max_prob.append(predY.max())
+            #this will be repeated within a batch_id
+            session_batch.append(batch_id)
+            session_batch_size.append(len(batchlist))
+            session_batch_expanded_size.append(len(df_session))
+            if 'athome' in MNL_features:
+                home_value   = df_one_session['athome'].values                        #probability of openning at home
+                session_home_value.append(get_chosen_pred_value(predY, home_value))
+                home_rank.append(rank(predY, home_value))
 
     df_session_KPIs = pd.DataFrame()
-    df_session_KPIs['session_id'] = list(df_session_groups.groups.keys())
+    df_session_KPIs['session_id'] = list(df_testing_groups.groups.keys())
     df_session_KPIs['session_size'] = session_size
     df_session_KPIs['num_chosen_choices'] = session_num_chosen_choices
     df_session_KPIs['rank_of_chosen_one'] = session_rank
     df_session_KPIs['prob_of_chosen_one'] = session_pred_value
     df_session_KPIs['max_prob'] = session_max_prob
+    df_session_KPIs['second_highest_prob'] = session_second_prob
+    df_session_KPIs['third_highest_prob'] = session_third_prob
+    if 'athome' in MNL_features:
+        df_session_KPIs['prob_of_home_one'] = session_home_value
+        df_session_KPIs['rank_of_home_one']   = home_rank
 
     return df_session_KPIs
 

@@ -26,7 +26,11 @@ class MNL(nn.Module):
         self.softmax = torch.nn.Softmax(dim=1)
 
 
-    def forward(self, x):
+    def forward(self, x, ids):
+        #expect the input to be many sessions of alternatives (within a batch)
+        #session_id included
+        #calculate the softmax within a session
+
         # expect the input to be a session of alternatives
         util_values = self.linear(x)
 
@@ -35,14 +39,15 @@ class MNL(nn.Module):
 
         # transpose the result vector before the softmax
         util_values = torch.t(util_values)
+        ids=torch.t(ids)
+        
+        # Softmax utilities by session_id
+        idxs, vals = torch.unique(ids,return_counts=True)
+        vs = torch.split(util_values,tuple(vals),dim=1)
+        d = [self.softmax(v) for k,v in zip(idxs,vs)]
+        softmaxfx = torch.cat(d, dim=1)
 
-        # convert the softmax values to binary values
-        #max_values, indices = self.softmax(util_values).max()
-
-        #results = np.zeros(len(x))
-        #results[indices] = 1
-        #results = np.transpose(results)
-        return torch.t(self.softmax(util_values))
+        return torch.t(softmaxfx)
 
 
     def l1_loss(self, l1_weight=0.01):
@@ -69,13 +74,14 @@ class MNL(nn.Module):
         return l2_weight * (torch.sqrt(torch.pow(torch_params, 2).sum()))
 
 
-    def train(self, loss, optimizer, x_val, y_val,
+    def train(self, loss, optimizer, x_val, y_val,session_ids,
               l1_loss_weight = 0,  # when zero, no L1 regularization
               l2_loss_weight = 0,
               gpu=False):
         """
             Train the model with a batch (in our case, also a session) of data
         """
+        #add session_id
         # expect y_val to be of one_dimension
         y_val = y_val.reshape(len(y_val), 1)
 
@@ -93,7 +99,10 @@ class MNL(nn.Module):
         y = Variable(tensorY.type(dtype), requires_grad=False)
 
         # Forward to calculate the losses
-        fx = self.forward(x)
+        ids = torch.from_numpy(session_ids)
+        fx = self.forward(x,ids)
+
+        # Calculate losses
         data_loss = loss.forward(fx, y)
 
         # optional: add L1 or L2 penalities for regularization
@@ -132,13 +141,15 @@ class MNL(nn.Module):
         return output.data.item()
 
 
-    def predict(self, x_val, binary=False):
+    def predict(self, x_val, ids, binary=False):
         '''
             Give prediction for alternatives within a single session
             x_val: DataFrame, or np.ndarray
             return: numpy
         '''
         is_gpu = self.get_params()[0].is_cuda
+
+        ids = torch.from_numpy(ids)
 
         if isinstance(x_val, pd.DataFrame):
             tensorX = torch.from_numpy(x_val.values).double()
@@ -150,7 +161,7 @@ class MNL(nn.Module):
         else:
             x = Variable(tensorX, requires_grad=False)
 
-        output = self.forward(x)
+        output = self.forward(x,ids)
 
         if (is_gpu):
             # get the data from the memory of GPU into CPU
