@@ -180,7 +180,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_sessions, alter_data=None, 
     train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
     for batch_id, batchlist in enumerate(train_loader):
         if (expand):
-            batchlist=batchlist.tolist()
+            #batchlist=batchlist.tolist()
             keep=df_sessions['session_id'].isin(batchlist)
             tobeexpanded = df_sessions.loc[keep].set_index(['session_id', 'alter_id'])
             df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
@@ -188,7 +188,7 @@ def train_one_epoch(*, epoch_index, module_tuple, df_sessions, alter_data=None, 
             #print(df_session.head())
             #print(df_session.info())
         else:
-            batchlist=batchlist.tolist()
+            #batchlist=batchlist.tolist()
             keep=df_sessions['session_id'].isin(batchlist)
             df_session = df_sessions.loc[keep].reset_index()
             print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(df_session)}')
@@ -431,7 +431,7 @@ def test_model(model, df_testing, train_config, alter_data, session_data, featur
     train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
     for batch_id, batchlist in enumerate(train_loader):
         if (expand):
-            batchlist=batchlist.tolist()
+            #batchlist=batchlist.tolist()
             keep=df_testing['session_id'].isin(batchlist)
             tobeexpanded = df_testing.loc[keep].set_index(['session_id', 'alter_id'])
             df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
@@ -439,7 +439,7 @@ def test_model(model, df_testing, train_config, alter_data, session_data, featur
             #print(df_session.head())
             #print(df_session.info())
         else:
-            batchlist=batchlist.tolist()
+            #batchlist=batchlist.tolist()
             keep=df_testing['session_id'].isin(batchlist)
             df_session = df_testing.loc[keep].reset_index()
             print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(df_session)}')
@@ -529,12 +529,19 @@ def validate(model, df_testing, train_config, alter_data=None, session_data=None
     session_max_prob = []
     session_second_prob = []
     session_third_prob = []
+    session_mean_pred_value = []
+    session_mean_rank = []
+    session_mean_distance = []
+
     # the second maximum probability
     # the probability of opening at home
     if 'athome' in MNL_features:
         home_rank = []
+        home_mean_rank = []
         session_home_value = []
-
+        session_mean_home_value = []
+        session_num_chosen_homes = []
+        
     df_testing_groups = df_testing.groupby('session_id')
     datalist=list(df_testing_groups.groups.keys())
     # Important for the "stochastic" probability of the gradient descent algorithm ?!
@@ -545,15 +552,14 @@ def validate(model, df_testing, train_config, alter_data=None, session_data=None
     train_loader = torch.utils.data.DataLoader(dataset=datalist, batch_size=train_config['batch_size'], shuffle=False)
     for batch_id, batchlist in enumerate(train_loader):
         if (expand):
-            batchlist=batchlist.tolist()
+            #batchlist=batchlist.tolist()
             keep=df_testing['session_id'].isin(batchlist)
             tobeexpanded = df_testing.loc[keep].set_index(['session_id', 'alter_id'])
             df_session = get_expanded_data(tobeexpanded, train_config, alter_data, session_data)
             print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(tobeexpanded)} expanded to {len(df_session)}')
             #print(df_session.head())
-            #print(df_session.info())
         else:
-            batchlist=batchlist.tolist()
+            #batchlist=batchlist.tolist()
             keep=df_testing['session_id'].isin(batchlist)
             df_session = df_testing.loc[keep].reset_index()
             print(f'Batch_id: {batch_id}/{len(train_loader)}: Size={len(df_session)}')
@@ -575,26 +581,42 @@ def validate(model, df_testing, train_config, alter_data=None, session_data=None
             #print('SessionId:', session_id)
             #print('AlterId:', df_session['alter_id'].values)
             #print('Real Y-value:', df_session['choice'].values)
-            #print('Prediction:', predY)
+            #print('Prediction:', type(predY))
+
 
             choice_value = df_one_session['choice'].values
             session_num_chosen_choices.append(choice_value.sum())
             session_size.append(len(df_one_session))
             session_pred_value.append(get_chosen_pred_value(predY, choice_value))
             session_rank.append(rank(predY, choice_value))
-            #session_pred_value.append(mean_chosen_pred_value(predY, choice_value))
-            #session_rank.append(mean_rank(predY, choice_value))
-            session_second_prob.append(predY.max()) ##second max probability, third max probabiity,
-            session_third_prob.append(predY.max()) ##second max probability, third max probabiity,
-            session_max_prob.append(predY.max())
+            session_mean_pred_value.append(mean_chosen_pred_value(predY, choice_value))
+            session_mean_rank.append(mean_rank(predY, choice_value))
+            predYlist = predY.T.tolist()[0]
+            session_max_prob.append(np.max(predYlist))
             #this will be repeated within a batch_id
             session_batch.append(batch_id)
             session_batch_size.append(len(batchlist))
             session_batch_expanded_size.append(len(df_session))
+            session_mean_distance.append(np.mean(df_one_session['distance'].values))
             if 'athome' in MNL_features:
                 home_value   = df_one_session['athome'].values                        #probability of openning at home
                 session_home_value.append(get_chosen_pred_value(predY, home_value))
+                session_mean_home_value.append(mean_chosen_pred_value(predY, home_value))
                 home_rank.append(rank(predY, home_value))
+                home_mean_rank.append(mean_rank(predY, home_value))
+                session_num_chosen_homes.append(home_value.sum())
+            
+            if len(predYlist)<0:                    ##FIX THIS AT SOME POINT
+                nosecondmax = predYlist
+                nosecondmax = nosecondmax.remove(np.max(nosecondmax))
+                nothirdmax = nosecondmax
+                nothirdmax = nothirdmax.remove(np.max(nothirdmax))
+                session_second_prob.append(np.max(nosecondmax)) ##second max probability
+                session_third_prob.append(np.max(nothirdmax)) ##third max probabiity,
+            else:
+                session_second_prob.append(np.max(predYlist)) ##second max probability
+                session_third_prob.append(np.max(predYlist)) ##third max probabiity,
+            
 
     df_session_KPIs = pd.DataFrame()
     df_session_KPIs['session_id'] = list(df_testing_groups.groups.keys())
@@ -602,12 +624,18 @@ def validate(model, df_testing, train_config, alter_data=None, session_data=None
     df_session_KPIs['num_chosen_choices'] = session_num_chosen_choices
     df_session_KPIs['rank_of_chosen_one'] = session_rank
     df_session_KPIs['prob_of_chosen_one'] = session_pred_value
+    df_session_KPIs['mean_rank_of_chosen_one'] = session_mean_rank
+    df_session_KPIs['mean_prob_of_chosen_one'] = session_mean_pred_value    
     df_session_KPIs['max_prob'] = session_max_prob
     df_session_KPIs['second_highest_prob'] = session_second_prob
     df_session_KPIs['third_highest_prob'] = session_third_prob
+    df_session_KPIs['session_mean_distance'] = session_mean_distance
     if 'athome' in MNL_features:
-        df_session_KPIs['prob_of_home_one'] = session_home_value
-        df_session_KPIs['rank_of_home_one']   = home_rank
+        df_session_KPIs['prob_of_home'] = session_home_value
+        df_session_KPIs['rank_of_home'] = home_rank
+        df_session_KPIs['mean_prob_of_home'] = session_mean_home_value
+        df_session_KPIs['mean_rank_of_home'] = home_mean_rank        
+        df_session_KPIs['num_chosen_homes'] = session_num_chosen_homes
 
     return df_session_KPIs
 

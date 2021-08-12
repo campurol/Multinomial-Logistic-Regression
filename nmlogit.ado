@@ -12,6 +12,7 @@ syntax [, alter_features(string) 			///
 				extra_choice_features(string) ///
 				session_alter_features(string) ///
 				batch_size(integer 1) ///
+				selectvar(string) ///
 				save_model(string)]
 
 if "`choice_df'"==""{
@@ -32,6 +33,7 @@ if "`alter_id'"==""{
 if "`expand'"==""{
 	local expand="True"
 }
+frame create `save_model'
 				
 python: nmlogit( 													///
 						alter_features="`alter_features'",			///
@@ -46,7 +48,8 @@ python: nmlogit( 													///
 						choice_groups="`choice_groups'"	, ///
 						extra_choice_features="`extra_choice_features'", ///
 						session_alter_features = "`session_alter_features'", ///
-						save_model = "`save_model'" ///
+						save_model = "`save_model'", ///
+						selectvar = "`selectvar'" ///
 					)
 					
 
@@ -81,6 +84,7 @@ def nmlogit(*,	alter_features,
 				choice_groups, 
 				extra_choice_features,
 				session_alter_features,
+				selectvar,
 				save_model):
 	global config
 	
@@ -106,7 +110,7 @@ def nmlogit(*,	alter_features,
 		
 	alter_data = alter_connector.get(alter_features)
 	session_data = session_connector.get(session_features)
-	choices = choice_connector.get(choice_features)
+	choices = choice_connector.get(var=choice_features,selectvar=selectvar)
 	
 	#Define Pandas Dataframe
 	alter_data = pd.DataFrame(alter_data,columns=alter_features)
@@ -124,37 +128,59 @@ def nmlogit(*,	alter_features,
 	from scipy.stats import norm
 	from operator import truediv
 
-    b=model.get_params()
-    gradient=model.get_params().grad
-    hessian=torch.mm(torch.t(gradient),gradient)
-    se = torch.sqrt(torch.diagonal(hessian))
-    t=torch.div(b,se)
+	b=model.get_params()
+	gradient=model.get_params().grad
+	print(f"coefficients: {model.get_feature_weights()}")
+	print(f"gradient: {gradient} shape: {gradient.size()}")
+	hessian=torch.mm(torch.t(gradient),gradient)
+	se = torch.sqrt(torch.diagonal(hessian))
+	print(f"standard errors: {se} shape {se.size()}")	
+	t=torch.div(b,se)
+	print(f"t-values: {t} shape {t.size()}")	
 
-    b=b.tolist()
-    se=se.tolist()
-    gradient=gradient.tolist()
-    hessian=hessian.tolist()
-    t=t.tolist()
+	b=b.tolist()
+	se=se.tolist()
+	gradient=gradient.tolist()
+	hessian=hessian.tolist()
+	t=t.tolist()
 
-    p=1-norm.cdf(t)
-	
-	sfi.Matrix.create("b",np.shape(b)[0],np.shape(b)[1],0)
-	sfi.Matrix.create("se",np.shape(se)[0],np.shape(se)[1],0)
-	sfi.Matrix.create("p",np.shape(p)[0],np.shape(p)[1],0)
-	sfi.Matrix.create("V",np.shape(hessian)[0],np.shape(hessian)[1],0)
-	sfi.Matrix.create("t",np.shape(t)[0],np.shape(t)[1],0)
-    
+	p=1-norm.cdf(t)
+	print(f"p-values: {p} shape {np.shape(p)}")	
+		
 	sfi.Matrix.store("b",b)
-	sfi.Matrix.store("se",se)
 	sfi.Matrix.store("p",p)
-	sfi.Matrix.store("V",V)
-	sfi.Matrix.store("t",t)    
-	
-	print(f"coefficients: {b} shape {np.shape(b)}")
-	print(f"gradient: {gradient}")
-	print(f"standard errors: {se} shape {np.shape(se)}")	
-	print(f"-values: {p} shape {np.shape(p)}")	
+	sfi.Matrix.store("V",hessian)
+	sfi.Matrix.store("t",t)	
+	sfi.Matrix.store("se",se)	
 	
 	model.save(f'{save_model}.pkl')
 	
+	##predict probabilities
+	ds = validate(model=model, df_testing=choices, train_config=config, alter_data=alter_data, session_data=session_data)
+	
+	# get the column names
+	colnames = ds.columns
+	f = sfi.Frame.connect(save_model)
+	f.setObsTotal(len(ds))
+	
+	for i in range(len(colnames)):
+		dtype = ds.dtypes[i].name
+		# make a valid Stata variable name
+		varname = sfi.SFIToolkit.makeVarName(colnames[i])
+		varval = ds[colnames[i]].values.tolist()
+		if dtype == "int64":
+			f.addVarInt(varname)
+			f.store(varname, None, varval)
+		elif dtype == "float64":
+			f.addVarDouble(varname)
+			f.store(varname, None, varval)
+		elif dtype == "bool":
+			f.addVarByte(varname)
+			f.store(varname, None, varval)
+		else:
+			# all other types store as a string
+			f.addVarStr(varname, 1)
+			s = [str(i) for i in varval]
+			f.store(varname, None, s)
+ 
 end
