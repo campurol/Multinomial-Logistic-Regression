@@ -1,0 +1,3 @@
+[submodule "ref/choice-set-confounding"]
+	path = ref/choice-set-confounding
+	url = https://github.com/tomlinsonk/choice-set-confounding
